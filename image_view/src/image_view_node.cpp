@@ -72,8 +72,12 @@ namespace image_view
 
 void ThreadSafeImage::set(cv_bridge::CvImageConstPtr image)
 {
-  std::lock_guard<std::mutex> lock(mutex_);
-  image_ = image;
+  // A frame the window thread has not taken yet is replaced, and released outside the lock.
+  cv_bridge::CvImageConstPtr replaced;
+  {
+    std::lock_guard<std::mutex> lock(mutex_);
+    replaced = std::exchange(image_, std::move(image));
+  }
   condition_.notify_one();
 }
 
@@ -90,10 +94,11 @@ cv_bridge::CvImageConstPtr ThreadSafeImage::pop()
   {
     std::unique_lock<std::mutex> lock(mutex_);
 
+    // The timeout lets the window thread notice shutdown and a closed window without new images.
     condition_.wait_for(
       lock, std::chrono::milliseconds(100),
       [this] {
-        return !image_;
+        return image_ != nullptr;
       });
 
     image = std::move(image_);
@@ -300,10 +305,8 @@ void ImageViewNode::windowThread()
     if (image) {
       cv::imshow(window_name_, image->image);
       shown_image_.set(image);
-      cv::waitKey(1);
-    } else {
-      rclcpp::sleep_for(std::chrono::milliseconds(20));
     }
+    cv::waitKey(1);
   }
 
   cv::destroyAllWindows();
